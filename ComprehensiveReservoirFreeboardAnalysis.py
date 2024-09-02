@@ -71,7 +71,8 @@ def calculate_wave_characteristics(fetch, wind_speed, slope):
     Rf = 2.2 if slope == 1/2 else 1.75 if slope == 1/3 else 2.0
     wave_surcharge = Rf * HD
     wave_surcharge = max(wave_surcharge, CATEGORY_A_MIN_FREEBOARD)
-    total_freeboard = wave_surcharge + 0.2  # 0.2m safety margin
+    safety_margin = 0.2  # meters
+    total_freeboard = wave_surcharge + safety_margin
     return {
         'Hs': Hs,
         'HD': HD,
@@ -83,16 +84,12 @@ def calculate_wave_characteristics(fetch, wind_speed, slope):
 def calculate_normal_operation(row, wind_speed, rainfall, year):
     top_level = row["Top Water Level (m)"]
     surface_area = row["Water Surface Area (m2)"]
-    fetch = np.sqrt(surface_area)
     slope = 1 / row["Embankment_Slopes_Numeric"]
-    
+    fetch = np.sqrt(surface_area)
     wave_char = calculate_wave_characteristics(fetch, wind_speed, slope)
-    
     volume_increase = rainfall * surface_area / 1000  # Convert mm to m
     depth_increase = volume_increase / surface_area
-    
     optimal_crest = top_level + wave_char['total_freeboard']
-    
     return pd.Series({
         'year': year,
         'optimal_crest': optimal_crest,
@@ -128,7 +125,7 @@ def perform_analysis(reservoir_data, return_periods):
     results = []
     for idx, row in reservoir_data.iterrows():
         try:
-            row_results = {'Option': row['Option']}
+            row_results = row.to_dict()  # Preserve all original columns
             fetch = np.sqrt(row["Water Surface Area (m2)"])
             slope = 1 / row["Embankment_Slopes_Numeric"]
             
@@ -159,6 +156,11 @@ def perform_analysis(reservoir_data, return_periods):
 
 # Perform analysis
 results = perform_analysis(reservoir_data, return_periods)
+
+# Debug information
+st.subheader("Debug Information")
+st.write("Original reservoir_data columns:", reservoir_data.columns.tolist())
+st.write("Results columns:", results.columns.tolist())
 
 # Interactive Dashboard
 st.header("Interactive Dashboard")
@@ -218,23 +220,15 @@ st.header("Wave Characteristics Dashboard")
 wave_characteristics = ['Hs', 'HD', 'Rf', 'wave_surcharge', 'total_freeboard']
 selected_characteristic = st.selectbox("Select wave characteristic to display:", wave_characteristics)
 
-wave_results = filtered_results[['Option'] + [f'Wave_{char}' for char in wave_characteristics]]
-wave_results = wave_results.rename(columns={f'Wave_{char}': char for char in wave_characteristics})
-
-st.dataframe(wave_results)
-
-# Add option to download the results
-@st.cache_data
-def convert_df_to_csv(df):
-    return df.to_csv(index=False).encode('utf-8')
-
-csv = convert_df_to_csv(wave_results)
-st.download_button(
-    label="Download wave characteristics results as CSV",
-    data=csv,
-    file_name="wave_characteristics_results.csv",
-    mime="text/csv",
-)
+wave_column = f'Wave_{selected_characteristic}'
+if wave_column in filtered_results.columns:
+    wave_fig = px.bar(filtered_results, x='Option', y=wave_column, color='Option')
+    wave_fig.update_layout(title=f"{selected_characteristic} by Option", 
+                           xaxis_title="Option", 
+                           yaxis_title=selected_characteristic)
+    st.plotly_chart(wave_fig)
+else:
+    st.error(f"Wave characteristic '{selected_characteristic}' not found in results.")
 
 # Rainfall Frequency Analysis
 st.header("Rainfall Frequency Analysis")
@@ -255,22 +249,50 @@ st.plotly_chart(rainfall_fig)
 
 # Freeboard Margin Comparison
 st.header("Freeboard Margin Comparison")
-filtered_results['Max_Water_Level'] = filtered_results[[col for col in filtered_results.columns if col.endswith('_optimal_crest')]].max(axis=1)
-filtered_results['Freeboard_Margin'] = filtered_results['Max_Water_Level'] - filtered_results['Top Water Level (m)']
 
-freeboard_fig = px.bar(filtered_results, x='Option', y='Freeboard_Margin', color='Option')
-freeboard_fig.update_layout(title="Freeboard Margin by Option", 
-                            xaxis_title="Option", 
-                            yaxis_title="Freeboard Margin (m)")
-st.plotly_chart(freeboard_fig)
+# Check if necessary columns exist
+if 'Top Water Level (m)' not in results.columns:
+    st.error("'Top Water Level (m)' column is missing from the results. Please check the analysis function.")
+    st.stop()
+
+# Calculate Max Water Level
+optimal_crest_columns = [col for col in results.columns if col.endswith('_optimal_crest')]
+if optimal_crest_columns:
+    results['Max_Water_Level'] = results[optimal_crest_columns].max(axis=1)
+    st.write("Max Water Level calculated from columns:", optimal_crest_columns)
+else:
+    st.error("No '_optimal_crest' columns found. Unable to calculate Max Water Level.")
+    st.stop()
+
+# Calculate Freeboard Margin
+try:
+    results['Freeboard_Margin'] = results['Max_Water_Level'] - results['Top Water Level (m)']
+    
+    freeboard_fig = px.bar(filtered_results, x='Option', y='Freeboard_Margin', color='Option')
+    freeboard_fig.update_layout(title="Freeboard Margin by Option", 
+                                xaxis_title="Option", 
+                                yaxis_title="Freeboard Margin (m)")
+    st.plotly_chart(freeboard_fig)
+except Exception as e:
+    st.error(f"Error calculating Freeboard Margin: {str(e)}")
+    st.write("Results head:")
+    st.write(results.head())
 
 # Key Metrics Table
 st.header("Key Metrics Table")
 metrics_cols = ['Option', 'Storage Volume (m3)', 'Max Embankment Height (m)', 'Freeboard_Margin']
-st.dataframe(filtered_results[metrics_cols].set_index('Option'))
+available_cols = [col for col in metrics_cols if col in filtered_results.columns]
+if available_cols:
+    st.dataframe(filtered_results[available_cols].set_index('Option'))
+else:
+    st.error("No matching columns found for Key Metrics Table.")
 
 # Download results
 st.header("Download Results")
+
+@st.cache_data
+def convert_df_to_csv(df):
+    return df.to_csv(index=False).encode('utf-8')
 
 csv = convert_df_to_csv(results)
 st.download_button(
@@ -283,16 +305,57 @@ st.download_button(
 # Conclusion
 st.header("Conclusion and Recommendations")
 st.write("""
-Based on the analysis performed, consider the following recommendations:
-
-1. Prioritize options with larger freeboard margins for better safety against overtopping.
-2. Consider options that maintain adequate freeboard under various conditions.
-3. Evaluate the wave characteristics for each option to ensure they meet safety standards.
 4. Conduct more detailed studies for options that perform well in this analysis.
 5. Ensure compliance with relevant local and national regulations for dam safety.
 6. Consider ease of operation and maintenance for long-term safety.
+7. Evaluate the cost-effectiveness of each option, balancing safety considerations with economic factors.
+8. Assess the environmental impact of each option, including effects on local ecosystems and water resources.
+9. Consider the potential impacts of climate change on future rainfall patterns and adjust designs accordingly.
+10. Involve stakeholders in the decision-making process, including local communities and regulatory bodies.
 
 Remember that this analysis provides a high-level comparison. Final decision-making should involve a multidisciplinary team and consider additional factors not covered here.
 """)
 
+# Final Notes
+st.header("Final Notes")
+st.write("""
+- This tool provides a comprehensive analysis of reservoir freeboard for various scenarios, but it should be used in conjunction with other engineering analyses and expert judgment.
+- The results are based on the input data and parameters provided. Always verify the accuracy and relevance of input data.
+- Regularly update the analysis with new data and revised parameters to ensure its continued relevance.
+- Consider performing sensitivity analyses by adjusting key parameters to understand the robustness of different design options.
+- Consult with geotechnical, hydrological, and structural engineering experts for a complete assessment of each reservoir option.
+- Document all assumptions and limitations of this analysis for future reference and transparency in decision-making.
+""")
+
+# User Feedback
+st.header("User Feedback")
+st.write("""
+We value your input! If you have any suggestions for improving this tool or encounter any issues, please let us know.
+You can provide feedback by:
+- Emailing the creator: mark.kirkpatrick@aecom.com
+- Submitting an issue on our project repository (if applicable)
+- Using the feedback form below
+""")
+
+feedback = st.text_area("Enter your feedback here:")
+if st.button("Submit Feedback"):
+    # Here you would typically send this feedback to a database or email
+    # For now, we'll just acknowledge it
+    st.success("Thank you for your feedback! We appreciate your input.")
+
+# Disclaimer
+st.header("Disclaimer")
+st.write("""
+This tool is provided for informational and educational purposes only. While every effort has been made to ensure the accuracy and reliability of the analysis, the results should not be used as the sole basis for any decision-making in real-world reservoir design or management.
+
+Users should always consult with qualified professionals and comply with all applicable laws, regulations, and industry standards when designing, constructing, or managing reservoir systems.
+
+The creators and maintainers of this tool assume no liability for any consequences resulting from the use of this tool or the information it provides.
+""")
+
+# Closing
 st.write("Analysis complete. Thank you for using the Comprehensive Reservoir Freeboard Analysis tool.")
+
+# Optional: Add a timestamp for when the analysis was run
+from datetime import datetime
+st.write(f"Analysis run on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
