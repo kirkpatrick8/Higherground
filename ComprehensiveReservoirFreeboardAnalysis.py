@@ -83,10 +83,16 @@ def calculate_wave_characteristics(fetch, wind_speed, slope):
 def calculate_normal_operation(row, wind_speed, rainfall, year):
     top_level = row["Top Water Level (m)"]
     surface_area = row["Water Surface Area (m2)"]
+    fetch = np.sqrt(surface_area)
+    slope = 1 / row["Embankment_Slopes_Numeric"]
+    
+    wave_char = calculate_wave_characteristics(fetch, wind_speed, slope)
+    
     volume_increase = rainfall * surface_area / 1000  # Convert mm to m
     depth_increase = volume_increase / surface_area
-    wave_char = calculate_wave_characteristics(row, wind_speed)
-    optimal_crest = top_level + wave_char['Total Freeboard (m)']
+    
+    optimal_crest = top_level + wave_char['total_freeboard']
+    
     return pd.Series({
         'year': year,
         'optimal_crest': optimal_crest,
@@ -213,6 +219,10 @@ wave_results = wave_results.rename(columns={f'Wave_{char}': char for char in wav
 st.dataframe(wave_results)
 
 # Add option to download the results
+@st.cache_data
+def convert_df_to_csv(df):
+    return df.to_csv(index=False).encode('utf-8')
+
 csv = convert_df_to_csv(wave_results)
 st.download_button(
     label="Download wave characteristics results as CSV",
