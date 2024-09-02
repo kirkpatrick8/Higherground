@@ -19,7 +19,7 @@ It calculates wave characteristics, optimal crest levels, and freeboard margins 
 
 Data Requirements:
 1. Reservoir Data CSV:
-   - Columns: Option, Bottom Water Level (m), Top Water Level (m), Storage Volume (m3), Water Surface Area (m2), Embankment Slopes, Max Embankment Height (m)
+   - Columns: Option, Bottom Water Level (m), Top Water Level (m), Storage Volume (m3), Water Surface Area (m2), Embankment Slopes, Cost, Max Embankment Height (m)
 2. Return Period Data CSV:
    - Columns: Year, Net Rainfall (mm)
 
@@ -51,6 +51,9 @@ st.write(reservoir_data.head())
 
 st.subheader("Return Period Data Preview")
 st.write(return_periods.head())
+
+# Process Embankment Slopes
+reservoir_data['Embankment_Slopes_Numeric'] = reservoir_data['Embankment Slopes'].apply(lambda x: float(x.split('h:')[0]))
 
 # Sidebar for scenario parameters
 st.sidebar.header("Scenario Parameters")
@@ -138,12 +141,6 @@ def perform_analysis(reservoir_data, return_periods):
         results.append(row_results)
     
     final_results = pd.DataFrame(results)
-    
-    # Add debugging information
-    st.subheader("Debug Information")
-    st.write("Column names in the results dataframe:")
-    st.write(final_results.columns.tolist())
-    
     return final_results
 
 # Perform analysis
