@@ -126,29 +126,34 @@ def calculate_system_failure(row, rainfall_max):
 @st.cache_data
 def perform_analysis(reservoir_data, return_periods):
     results = []
-    for _, row in reservoir_data.iterrows():
-        row_results = {'Option': row['Option']}
-        fetch = np.sqrt(row["Water Surface Area (m2)"])
-        slope = 1 / row["Embankment_Slopes_Numeric"]
-        
-        wave_char = calculate_wave_characteristics(fetch, WIND_SPEED, slope)
-        row_results.update({f'Wave_{k}': v for k, v in wave_char.items()})
-        
-        for _, rp_row in return_periods.iterrows():
-            normal_op = calculate_normal_operation(row, WIND_SPEED, rp_row['Net Rainfall (mm)'], rp_row['Year'])
-            for key, value in normal_op.items():
-                row_results[f'Normal_Operation_{rp_row["Year"]:.1f}yr_{key}'] = value
-        
-        pump_failure = calculate_pump_failure(row)
-        for key, value in pump_failure.items():
-            row_results[f'Pump_Failure_{key}'] = value
-        
-        system_failure = calculate_system_failure(row, return_periods['Net Rainfall (mm)'].max())
-        for key, value in system_failure.items():
-            row_results[f'System_Failure_{key}'] = value
-        
-        results.append(row_results)
-    
+    for idx, row in reservoir_data.iterrows():
+        try:
+            row_results = {'Option': row['Option']}
+            fetch = np.sqrt(row["Water Surface Area (m2)"])
+            slope = 1 / row["Embankment_Slopes_Numeric"]
+            
+            wave_char = calculate_wave_characteristics(fetch, WIND_SPEED, slope)
+            row_results.update({f'Wave_{k}': v for k, v in wave_char.items()})
+            
+            for _, rp_row in return_periods.iterrows():
+                normal_op = calculate_normal_operation(row, WIND_SPEED, rp_row['Net Rainfall (mm)'], rp_row['Year'])
+                for key, value in normal_op.items():
+                    row_results[f'Normal_Operation_{rp_row["Year"]:.1f}yr_{key}'] = value
+            
+            pump_failure = calculate_pump_failure(row)
+            for key, value in pump_failure.items():
+                row_results[f'Pump_Failure_{key}'] = value
+            
+            system_failure = calculate_system_failure(row, return_periods['Net Rainfall (mm)'].max())
+            for key, value in system_failure.items():
+                row_results[f'System_Failure_{key}'] = value
+            
+            results.append(row_results)
+        except Exception as e:
+            st.error(f"Error processing row {idx} (Option: {row['Option']}): {str(e)}")
+            st.write("Row data:", row)
+            raise e
+
     final_results = pd.DataFrame(results)
     return final_results
 
