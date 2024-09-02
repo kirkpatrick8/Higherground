@@ -60,12 +60,84 @@ PUMP_FAILURE_INFLOW = st.sidebar.number_input("Pump Failure Inflow (Mm³/hour)",
 PUMP_FAILURE_DURATION = st.sidebar.number_input("Pump Failure Duration (hours)", value=1, step=1)
 OUTAGE_DURATION = st.sidebar.number_input("System Failure Outage Duration (hours)", value=24*7, step=24)
 
-# Functions (keep existing functions)
+# Functions
+def calculate_wave_characteristics(fetch, wind_speed, slope):
+    g = 9.81  # acceleration due to gravity (m/s^2)
+    Hs = 0.0016 * (wind_speed**2 / g) * np.sqrt(fetch / g)
+    HD = Hs * 1.2  # Using the "Surfaced road" factor
+    Rf = 2.2 if slope == 1/2 else 1.75 if slope == 1/3 else 2.0
+    wave_surcharge = Rf * HD
+    wave_surcharge = max(wave_surcharge, CATEGORY_A_MIN_FREEBOARD)
+    safety_margin = 0.2  # meters
+    total_freeboard = wave_surcharge + safety_margin
+    return {
+        'Hs': Hs,
+        'HD': HD,
+        'Rf': Rf,
+        'wave_surcharge': wave_surcharge,
+        'total_freeboard': total_freeboard
+    }
+
+def calculate_normal_operation(row, wind_speed, rainfall, year):
+    top_level = row["Top Water Level (m)"]
+    surface_area = row["Water Surface Area (m2)"]
+    slope = 1 / row["Embankment_Slopes_Numeric"]
+    fetch = np.sqrt(surface_area)
+    wave_char = calculate_wave_characteristics(fetch, wind_speed, slope)
+    volume_increase = rainfall * surface_area / 1000  # Convert mm to m
+    depth_increase = volume_increase / surface_area
+    optimal_crest = top_level + wave_char['total_freeboard']
+    return pd.Series({
+        'year': year,
+        'optimal_crest': optimal_crest,
+        'depth_increase': depth_increase,
+        **wave_char
+    })
+
+def calculate_pump_failure(row):
+    top_level = row["Top Water Level (m)"]
+    surface_area = row["Water Surface Area (m2)"]
+    volume_increase = PUMP_FAILURE_INFLOW * PUMP_FAILURE_DURATION
+    depth_increase = volume_increase / surface_area
+    optimal_crest = top_level + depth_increase + CATEGORY_A_MIN_FREEBOARD
+    return pd.Series({
+        'optimal_crest': optimal_crest,
+        'depth_increase': depth_increase
+    })
+
+def calculate_system_failure(row, rainfall_max):
+    top_level = row["Top Water Level (m)"]
+    surface_area = row["Water Surface Area (m2)"]
+    volume_increase = rainfall_max * surface_area / 1000 * OUTAGE_DURATION  # Convert mm to m
+    depth_increase = volume_increase / surface_area
+    optimal_crest = top_level + depth_increase + CATEGORY_A_MIN_FREEBOARD
+    return pd.Series({
+        'optimal_crest': optimal_crest,
+        'depth_increase': depth_increase
+    })
 
 # Main analysis function
 @st.cache_data
 def perform_analysis(reservoir_data, return_periods):
-    # ... (keep existing analysis code)
+    results = []
+    for _, row in reservoir_data.iterrows():
+        row_results = {'Option': row['Option']}
+        for _, rp_row in return_periods.iterrows():
+            normal_op = calculate_normal_operation(row, WIND_SPEED, rp_row['Net Rainfall (mm)'], rp_row['Year'])
+            for key, value in normal_op.items():
+                row_results[f'Normal_Operation_{rp_row["Year"]:.1f}yr_{key}'] = value
+        
+        pump_failure = calculate_pump_failure(row)
+        for key, value in pump_failure.items():
+            row_results[f'Pump_Failure_{key}'] = value
+        
+        system_failure = calculate_system_failure(row, return_periods['Net Rainfall (mm)'].max())
+        for key, value in system_failure.items():
+            row_results[f'System_Failure_{key}'] = value
+        
+        results.append(row_results)
+    
+    final_results = pd.DataFrame(results)
     
     # Add debugging information
     st.subheader("Debug Information")
