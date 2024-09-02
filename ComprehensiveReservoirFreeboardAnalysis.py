@@ -162,6 +162,30 @@ st.subheader("Debug Information")
 st.write("Original reservoir_data columns:", reservoir_data.columns.tolist())
 st.write("Results columns:", results.columns.tolist())
 
+# Calculate Freeboard Margin
+st.header("Freeboard Margin Calculation")
+
+if 'Top Water Level (m)' not in results.columns:
+    st.error("'Top Water Level (m)' column is missing from the results. Please check the analysis function.")
+    st.stop()
+
+optimal_crest_columns = [col for col in results.columns if col.endswith('_optimal_crest')]
+if optimal_crest_columns:
+    results['Max_Water_Level'] = results[optimal_crest_columns].max(axis=1)
+    st.write("Max Water Level calculated from columns:", optimal_crest_columns)
+else:
+    st.error("No '_optimal_crest' columns found. Unable to calculate Max Water Level.")
+    st.stop()
+
+try:
+    results['Freeboard_Margin'] = results['Max_Water_Level'] - results['Top Water Level (m)']
+    st.success("Freeboard Margin calculated successfully.")
+except Exception as e:
+    st.error(f"Error calculating Freeboard Margin: {str(e)}")
+    st.write("Results head:")
+    st.write(results.head())
+    st.stop()
+
 # Interactive Dashboard
 st.header("Interactive Dashboard")
 
@@ -180,39 +204,43 @@ selected_options = st.multiselect(
 filtered_results = results[results['Option'].isin(selected_options)]
 
 # Prepare data for visualization
-if "Normal Operation" in scenario:
-    if scenario == "Normal Operation":
-        columns_to_plot = [col for col in filtered_results.columns if col.startswith('Normal_Operation_') and col.endswith('_optimal_crest')]
-        melted_data = filtered_results.melt(
-            id_vars=['Option'],
-            value_vars=columns_to_plot,
-            var_name='Return Period',
-            value_name='Optimal Crest Level'
-        )
-        melted_data['Return Period'] = melted_data['Return Period'].str.extract(r'(\d+\.?\d*)').astype(float)
-        fig = px.line(melted_data, x='Return Period', y='Optimal Crest Level', color='Option', markers=True)
-        fig.update_layout(title="Normal Operation - Optimal Crest Level vs Return Period", 
-                          xaxis_title="Return Period (years)", 
-                          yaxis_title="Optimal Crest Level (m)")
-    else:
-        year = float(scenario.split('(')[1].split('yr')[0])
-        column_to_plot = f'Normal_Operation_{year:.1f}yr_optimal_crest'
-        fig = px.bar(filtered_results, x='Option', y=column_to_plot, color='Option')
-        fig.update_layout(title=f"Normal Operation ({year:.1f}-year) - Optimal Crest Level by Option", 
+try:
+    if "Normal Operation" in scenario:
+        if scenario == "Normal Operation":
+            columns_to_plot = [col for col in filtered_results.columns if col.startswith('Normal_Operation_') and col.endswith('_optimal_crest')]
+            melted_data = filtered_results.melt(
+                id_vars=['Option'],
+                value_vars=columns_to_plot,
+                var_name='Return Period',
+                value_name='Optimal Crest Level'
+            )
+            melted_data['Return Period'] = melted_data['Return Period'].str.extract(r'(\d+\.?\d*)').astype(float)
+            fig = px.line(melted_data, x='Return Period', y='Optimal Crest Level', color='Option', markers=True)
+            fig.update_layout(title="Normal Operation - Optimal Crest Level vs Return Period", 
+                              xaxis_title="Return Period (years)", 
+                              yaxis_title="Optimal Crest Level (m)")
+        else:
+            year = float(scenario.split('(')[1].split('yr')[0])
+            column_to_plot = f'Normal_Operation_{year:.1f}yr_optimal_crest'
+            fig = px.bar(filtered_results, x='Option', y=column_to_plot, color='Option')
+            fig.update_layout(title=f"Normal Operation ({year:.1f}-year) - Optimal Crest Level by Option", 
+                              xaxis_title="Option", 
+                              yaxis_title="Optimal Crest Level (m)")
+    elif scenario == "Pump Failure":
+        fig = px.bar(filtered_results, x='Option', y='Pump_Failure_optimal_crest', color='Option')
+        fig.update_layout(title="Pump Failure - Optimal Crest Level by Option", 
                           xaxis_title="Option", 
                           yaxis_title="Optimal Crest Level (m)")
-elif scenario == "Pump Failure":
-    fig = px.bar(filtered_results, x='Option', y='Pump_Failure_optimal_crest', color='Option')
-    fig.update_layout(title="Pump Failure - Optimal Crest Level by Option", 
-                      xaxis_title="Option", 
-                      yaxis_title="Optimal Crest Level (m)")
-else:  # System Failure
-    fig = px.bar(filtered_results, x='Option', y='System_Failure_optimal_crest', color='Option')
-    fig.update_layout(title="System Failure - Optimal Crest Level by Option", 
-                      xaxis_title="Option", 
-                      yaxis_title="Optimal Crest Level (m)")
+    else:  # System Failure
+        fig = px.bar(filtered_results, x='Option', y='System_Failure_optimal_crest', color='Option')
+        fig.update_layout(title="System Failure - Optimal Crest Level by Option", 
+                          xaxis_title="Option", 
+                          yaxis_title="Optimal Crest Level (m)")
 
-st.plotly_chart(fig)
+    st.plotly_chart(fig)
+except Exception as e:
+    st.error(f"Error creating visualization: {str(e)}")
+    st.write("Filtered results columns:", filtered_results.columns.tolist())
 
 # Wave Characteristics Dashboard
 st.header("Wave Characteristics Dashboard")
@@ -249,43 +277,52 @@ st.plotly_chart(rainfall_fig)
 
 # Freeboard Margin Comparison
 st.header("Freeboard Margin Comparison")
-
-# Check if necessary columns exist
-if 'Top Water Level (m)' not in results.columns:
-    st.error("'Top Water Level (m)' column is missing from the results. Please check the analysis function.")
-    st.stop()
-
-# Calculate Max Water Level
-optimal_crest_columns = [col for col in results.columns if col.endswith('_optimal_crest')]
-if optimal_crest_columns:
-    results['Max_Water_Level'] = results[optimal_crest_columns].max(axis=1)
-    st.write("Max Water Level calculated from columns:", optimal_crest_columns)
-else:
-    st.error("No '_optimal_crest' columns found. Unable to calculate Max Water Level.")
-    st.stop()
-
-# Calculate Freeboard Margin
 try:
-    results['Freeboard_Margin'] = results['Max_Water_Level'] - results['Top Water Level (m)']
-    
     freeboard_fig = px.bar(filtered_results, x='Option', y='Freeboard_Margin', color='Option')
     freeboard_fig.update_layout(title="Freeboard Margin by Option", 
                                 xaxis_title="Option", 
                                 yaxis_title="Freeboard Margin (m)")
     st.plotly_chart(freeboard_fig)
 except Exception as e:
-    st.error(f"Error calculating Freeboard Margin: {str(e)}")
-    st.write("Results head:")
-    st.write(results.head())
+    st.error(f"Error creating Freeboard Margin visualization: {str(e)}")
+    st.write("Filtered results columns:", filtered_results.columns.tolist())
 
-# Key Metrics Table
-st.header("Key Metrics Table")
-metrics_cols = ['Option', 'Storage Volume (m3)', 'Max Embankment Height (m)', 'Freeboard_Margin']
-available_cols = [col for col in metrics_cols if col in filtered_results.columns]
-if available_cols:
-    st.dataframe(filtered_results[available_cols].set_index('Option'))
+# Comprehensive Results Tables
+st.header("Comprehensive Results Tables")
+
+# Normal Operation Results
+st.subheader("Normal Operation Results")
+normal_op_columns = [col for col in results.columns if col.startswith('Normal_Operation_')]
+st.dataframe(results[['Option'] + normal_op_columns])
+
+# Pump Failure Results
+st.subheader("Pump Failure Results")
+pump_failure_columns = [col for col in results.columns if col.startswith('Pump_Failure_')]
+st.dataframe(results[['Option'] + pump_failure_columns])
+
+# System Failure Results
+st.subheader("System Failure Results")
+system_failure_columns = [col for col in results.columns if col.startswith('System_Failure_')]
+st.dataframe(results[['Option'] + system_failure_columns])
+
+# Wave Characteristics Results
+st.subheader("Wave Characteristics Results")
+wave_columns = [col for col in results.columns if col.startswith('Wave_')]
+st.dataframe(results[['Option'] + wave_columns])
+
+# Freeboard Margin Results
+st.subheader("Freeboard Margin Results")
+if 'Freeboard_Margin' in results.columns and 'Max_Water_Level' in results.columns:
+    freeboard_columns = ['Option', 'Top Water Level (m)', 'Max_Water_Level', 'Freeboard_Margin']
+    st.dataframe(results[freeboard_columns])
 else:
-    st.error("No matching columns found for Key Metrics Table.")
+    st.error("Freeboard Margin or Max Water Level columns are missing. Please check the calculations.")
+
+# Original Data
+st.subheader("Original Reservoir Data")
+original_columns = ['Option', 'Bottom Water Level (m)', 'Top Water Level (m)', 'Storage Volume (m3)', 
+                    'Water Surface Area (m2)', 'Embankment Slopes', 'Cost', 'Max Embankment Height (m)']
+st.dataframe(results[original_columns])
 
 # Download results
 st.header("Download Results")
@@ -305,6 +342,11 @@ st.download_button(
 # Conclusion
 st.header("Conclusion and Recommendations")
 st.write("""
+Based on the analysis performed, consider the following recommendations:
+
+1. Prioritize options with larger freeboard margins for better safety against overtopping.
+2. Consider options that maintain adequate freeboard under various conditions, including normal operation, pump failure, and system failure scenarios.
+3. Evaluate the wave characteristics for each option to ensure they meet safety standards.
 4. Conduct more detailed studies for options that perform well in this analysis.
 5. Ensure compliance with relevant local and national regulations for dam safety.
 6. Consider ease of operation and maintenance for long-term safety.
