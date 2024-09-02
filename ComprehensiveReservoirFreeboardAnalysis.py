@@ -8,37 +8,58 @@ from scipy import stats
 # Set page config
 st.set_page_config(page_title="Reservoir Freeboard Analysis", layout="wide")
 
-# Title
+# Title and creator information
 st.title("Comprehensive Reservoir Freeboard Analysis")
+st.write("Created by Mark Kirkpatrick (mark.kirkpatrick@aecom.com)")
+
+# Data requirements information
+st.info("""
+This script requires two CSV files to be present in the same directory:
+1. 'Reservoir_data.csv': Contains information about reservoir options.
+2. 'extended_specific_return_periods.csv': Contains return period data.
+
+Please ensure these files are available before running the script.
+""")
 
 # Sidebar for constants and inputs
 st.sidebar.header("Constants and Inputs")
 
 # Constants
+st.sidebar.subheader("General Parameters")
 CATEGORY_A_MIN_FREEBOARD = st.sidebar.number_input("Category A Min Freeboard (m)", value=0.6, step=0.1)
 WIND_SPEED = st.sidebar.number_input("Wind Speed (m/s)", value=15.0, step=0.5)
+
+st.sidebar.subheader("Pump Failure Scenario")
 PUMP_FAILURE_INFLOW = st.sidebar.number_input("Pump Failure Inflow (Mm³/hour)", value=0.75, step=0.05) * 1e6
 PUMP_FAILURE_DURATION = st.sidebar.number_input("Pump Failure Duration (hours)", value=1, step=1)
+
+st.sidebar.subheader("System Failure Scenario")
 OUTAGE_DURATION = st.sidebar.number_input("Outage Duration (hours)", value=24*7, step=24)
 
-# File uploader for reservoir data
-uploaded_reservoir_file = st.sidebar.file_uploader("Upload Reservoir Data CSV", type="csv")
-if uploaded_reservoir_file is not None:
-    reservoir_data = pd.read_csv(uploaded_reservoir_file)
-else:
-    st.warning("Please upload the reservoir data CSV file.")
-    st.stop()
+# Load data
+@st.cache_data
+def load_data():
+    try:
+        reservoir_data = pd.read_csv("Reservoir_data.csv")
+        return_periods = pd.read_csv("extended_specific_return_periods.csv")
+        return reservoir_data, return_periods
+    except FileNotFoundError as e:
+        st.error(f"Error: {e}. Please ensure the required CSV files are in the same directory as the script.")
+        st.stop()
 
-# File uploader for return period data
-uploaded_return_period_file = st.sidebar.file_uploader("Upload Return Period Data CSV", type="csv")
-if uploaded_return_period_file is not None:
-    return_periods = pd.read_csv(uploaded_return_period_file)
-else:
-    st.warning("Please upload the return period data CSV file.")
-    st.stop()
+reservoir_data, return_periods = load_data()
+
+# Display the first few rows of each dataset
+st.subheader("Reservoir Data Preview")
+st.write(reservoir_data.head())
+
+st.subheader("Return Period Data Preview")
+st.write(return_periods.head())
+
+# Process Embankment Slopes
+reservoir_data['Embankment_Slopes_Numeric'] = reservoir_data['Embankment Slopes'].apply(lambda x: float(x.split('h:')[0]) if isinstance(x, str) else x)
 
 # Functions
-@st.cache_data
 def calculate_wave_surcharge(fetch, wind_speed, dam_type, slope):
     g = 9.81  # acceleration due to gravity (m/s^2)
     
@@ -131,7 +152,7 @@ def calculate_system_failure(row, rainfall_max):
         'depth_increase': depth_increase
     })
 
-# Main analysis
+# Main analysis function
 @st.cache_data
 def perform_analysis(reservoir_data, return_periods):
     reservoir_results = reservoir_data.copy()
@@ -189,7 +210,7 @@ def plot_normal_operation_surcharge(data):
     ax.set_xlabel("Option")
     ax.set_ylabel("Top Water Level (m)")
     plt.xticks(rotation=90)
-    plt.legend(title="Return Period (years)")
+    plt.legend(title="Return Period (years)", bbox_to_anchor=(1.05, 1), loc='upper left')
     st.pyplot(fig)
 
 def plot_scenario_comparison(data):
@@ -208,6 +229,7 @@ def plot_scenario_comparison(data):
     ax.set_xlabel("Option")
     ax.set_ylabel("Top Water Level (m)")
     plt.xticks(rotation=90)
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
     st.pyplot(fig)
 
 # Display plots
@@ -264,6 +286,28 @@ pfd, sil_level = perform_sil_analysis(failure_rate, test_interval)
 
 st.write(f"Probability of Failure on Demand (PFD): {pfd:.2e}")
 st.write(f"SIL Level: {sil_level}")
+
+# Cost Analysis
+st.header("Cost Analysis")
+
+# Create a scatter plot of Cost vs Storage Volume
+fig, ax = plt.subplots(figsize=(10, 6))
+scatter = ax.scatter(reservoir_data['Storage Volume (m3)'], reservoir_data['Cost'], 
+                     c=reservoir_data['Max Embankment Height (m)'], cmap='viridis')
+ax.set_xlabel("Storage Volume (m³)")
+ax.set_ylabel("Cost")
+ax.set_title("Cost vs Storage Volume")
+plt.colorbar(scatter, label='Max Embankment Height (m)')
+st.pyplot(fig)
+
+# Create a bar plot of costs for each option
+fig, ax = plt.subplots(figsize=(12, 6))
+reservoir_data.sort_values('Cost').plot(x='Option', y='Cost', kind='bar', ax=ax)
+ax.set_xlabel("Option")
+ax.set_ylabel("Cost")
+ax.set_title("Cost Comparison of Reservoir Options")
+plt.xticks(rotation=90)
+st.pyplot(fig)
 
 # Download results
 st.header("Download Results")
