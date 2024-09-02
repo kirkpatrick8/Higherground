@@ -4,6 +4,7 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from scipy import stats
+import io
 
 # Set page config
 st.set_page_config(page_title="Reservoir Freeboard Analysis", layout="wide")
@@ -19,14 +20,24 @@ PUMP_FAILURE_INFLOW = 0.75e6  # 0.75Mm3 per hour
 PUMP_FAILURE_DURATION = 1  # 1 hour
 OUTAGE_DURATION = 24 * 7  # 1 week in hours
 
+# File uploaders
+uploaded_reservoir_file = st.file_uploader("Upload Reservoir Data CSV", type="csv")
+uploaded_return_period_file = st.file_uploader("Upload Return Period Data CSV", type="csv")
+
 # Load data
 @st.cache_data
-def load_data():
-    reservoir_data = pd.read_csv("Reservoir_data.csv")
-    return_periods = pd.read_csv("extended_specific_return_periods.csv")
-    return reservoir_data, return_periods
+def load_data(reservoir_file, return_period_file):
+    if reservoir_file is not None and return_period_file is not None:
+        reservoir_data = pd.read_csv(reservoir_file)
+        return_periods = pd.read_csv(return_period_file)
+        return reservoir_data, return_periods
+    return None, None
 
-reservoir_data, return_periods = load_data()
+reservoir_data, return_periods = load_data(uploaded_reservoir_file, uploaded_return_period_file)
+
+if reservoir_data is None or return_periods is None:
+    st.warning("Please upload both CSV files to proceed with the analysis.")
+    st.stop()
 
 # Display the first few rows of each dataset
 st.subheader("Reservoir Data Preview")
@@ -143,7 +154,7 @@ if "Normal Operation" in scenario:
             var_name='Return Period',
             value_name='Water Level'
         )
-        melted_data['Return Period'] = melted_data['Return Period'].str.extract('(\d+)').astype(int)
+        melted_data['Return Period'] = melted_data['Return Period'].str.extract(r'(\d+)').astype(int)
         fig = px.line(melted_data, x='Return Period', y='Water Level', color='Option', markers=True)
         fig.update_layout(title="Normal Operation - Water Level vs Return Period", 
                           xaxis_title="Return Period (years)", 
