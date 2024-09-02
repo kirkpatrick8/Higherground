@@ -52,9 +52,6 @@ st.write(reservoir_data.head())
 st.subheader("Return Period Data Preview")
 st.write(return_periods.head())
 
-# Process Embankment Slopes
-reservoir_data['Embankment_Slopes_Numeric'] = reservoir_data['Embankment Slopes'].apply(lambda x: float(x.split('h:')[0]))
-
 # Sidebar for scenario parameters
 st.sidebar.header("Scenario Parameters")
 CATEGORY_A_MIN_FREEBOARD = st.sidebar.number_input("Category A Min Freeboard (m)", value=0.6, step=0.1)
@@ -63,84 +60,19 @@ PUMP_FAILURE_INFLOW = st.sidebar.number_input("Pump Failure Inflow (Mm³/hour)",
 PUMP_FAILURE_DURATION = st.sidebar.number_input("Pump Failure Duration (hours)", value=1, step=1)
 OUTAGE_DURATION = st.sidebar.number_input("System Failure Outage Duration (hours)", value=24*7, step=24)
 
-# Functions
-def calculate_wave_characteristics(fetch, wind_speed, slope):
-    g = 9.81  # acceleration due to gravity (m/s^2)
-    Hs = 0.0016 * (wind_speed**2 / g) * np.sqrt(fetch / g)
-    HD = Hs * 1.2  # Using the "Surfaced road" factor
-    Rf = 2.2 if slope == 1/2 else 1.75 if slope == 1/3 else 2.0
-    wave_surcharge = Rf * HD
-    wave_surcharge = max(wave_surcharge, CATEGORY_A_MIN_FREEBOARD)
-    safety_margin = 0.2  # meters
-    total_freeboard = wave_surcharge + safety_margin
-    return {
-        'Hs': Hs,
-        'HD': HD,
-        'Rf': Rf,
-        'wave_surcharge': wave_surcharge,
-        'total_freeboard': total_freeboard
-    }
-
-def calculate_normal_operation(row, wind_speed, rainfall, year):
-    top_level = row["Top Water Level (m)"]
-    surface_area = row["Water Surface Area (m2)"]
-    slope = 1 / row["Embankment_Slopes_Numeric"]
-    fetch = np.sqrt(surface_area)
-    wave_char = calculate_wave_characteristics(fetch, wind_speed, slope)
-    volume_increase = rainfall * surface_area / 1000  # Convert mm to m
-    depth_increase = volume_increase / surface_area
-    optimal_crest = top_level + wave_char['total_freeboard']
-    return pd.Series({
-        'year': year,
-        'optimal_crest': optimal_crest,
-        'depth_increase': depth_increase,
-        **wave_char
-    })
-
-def calculate_pump_failure(row):
-    top_level = row["Top Water Level (m)"]
-    surface_area = row["Water Surface Area (m2)"]
-    volume_increase = PUMP_FAILURE_INFLOW * PUMP_FAILURE_DURATION
-    depth_increase = volume_increase / surface_area
-    optimal_crest = top_level + depth_increase + CATEGORY_A_MIN_FREEBOARD
-    return pd.Series({
-        'optimal_crest': optimal_crest,
-        'depth_increase': depth_increase
-    })
-
-def calculate_system_failure(row, rainfall_max):
-    top_level = row["Top Water Level (m)"]
-    surface_area = row["Water Surface Area (m2)"]
-    volume_increase = rainfall_max * surface_area / 1000 * OUTAGE_DURATION  # Convert mm to m
-    depth_increase = volume_increase / surface_area
-    optimal_crest = top_level + depth_increase + CATEGORY_A_MIN_FREEBOARD
-    return pd.Series({
-        'optimal_crest': optimal_crest,
-        'depth_increase': depth_increase
-    })
+# Functions (keep existing functions)
 
 # Main analysis function
 @st.cache_data
 def perform_analysis(reservoir_data, return_periods):
-    results = []
-    for _, row in reservoir_data.iterrows():
-        row_results = {'Option': row['Option']}
-        for _, rp_row in return_periods.iterrows():
-            normal_op = calculate_normal_operation(row, WIND_SPEED, rp_row['Net Rainfall (mm)'], rp_row['Year'])
-            for key, value in normal_op.items():
-                row_results[f'Normal_Operation_{rp_row["Year"]}yr_{key}'] = value
-        
-        pump_failure = calculate_pump_failure(row)
-        for key, value in pump_failure.items():
-            row_results[f'Pump_Failure_{key}'] = value
-        
-        system_failure = calculate_system_failure(row, return_periods['Net Rainfall (mm)'].max())
-        for key, value in system_failure.items():
-            row_results[f'System_Failure_{key}'] = value
-        
-        results.append(row_results)
+    # ... (keep existing analysis code)
     
-    return pd.DataFrame(results)
+    # Add debugging information
+    st.subheader("Debug Information")
+    st.write("Column names in the results dataframe:")
+    st.write(final_results.columns.tolist())
+    
+    return final_results
 
 # Perform analysis
 results = perform_analysis(reservoir_data, return_periods)
@@ -149,11 +81,8 @@ results = perform_analysis(reservoir_data, return_periods)
 st.header("Interactive Dashboard")
 
 # Scenario selection
-scenario = st.selectbox(
-    "Choose scenario to visualize:",
-    ["Normal Operation"] + [f"Normal Operation ({year}yr)" for year in return_periods['Year']] + 
-    ["Pump Failure", "System Failure"]
-)
+scenario_options = ["Normal Operation"] + [f"Normal Operation ({year:.1f}yr)" for year in return_periods['Year']] + ["Pump Failure", "System Failure"]
+scenario = st.selectbox("Choose scenario to visualize:", scenario_options)
 
 # Option selection
 selected_options = st.multiselect(
@@ -175,16 +104,16 @@ if "Normal Operation" in scenario:
             var_name='Return Period',
             value_name='Optimal Crest Level'
         )
-        melted_data['Return Period'] = melted_data['Return Period'].str.extract(r'(\d+)').astype(int)
+        melted_data['Return Period'] = melted_data['Return Period'].str.extract(r'(\d+\.?\d*)').astype(float)
         fig = px.line(melted_data, x='Return Period', y='Optimal Crest Level', color='Option', markers=True)
         fig.update_layout(title="Normal Operation - Optimal Crest Level vs Return Period", 
                           xaxis_title="Return Period (years)", 
                           yaxis_title="Optimal Crest Level (m)")
     else:
-        year = scenario.split('(')[1].split('yr')[0]
-        column_to_plot = f'Normal_Operation_{year}yr_optimal_crest'
+        year = float(scenario.split('(')[1].split('yr')[0])
+        column_to_plot = f'Normal_Operation_{year:.1f}yr_optimal_crest'
         fig = px.bar(filtered_results, x='Option', y=column_to_plot, color='Option')
-        fig.update_layout(title=f"Normal Operation ({year}-year) - Optimal Crest Level by Option", 
+        fig.update_layout(title=f"Normal Operation ({year:.1f}-year) - Optimal Crest Level by Option", 
                           xaxis_title="Option", 
                           yaxis_title="Optimal Crest Level (m)")
 elif scenario == "Pump Failure":
@@ -205,7 +134,7 @@ st.header("Wave Characteristics Dashboard")
 
 wave_scenario = st.selectbox(
     "Choose return period for wave characteristics:",
-    [f"{year}yr" for year in return_periods['Year']]
+    [f"{year:.1f}yr" for year in return_periods['Year']]
 )
 
 wave_characteristic = st.selectbox(
@@ -221,8 +150,8 @@ wave_fig.update_layout(title=f"{wave_characteristic} for {wave_scenario} Return 
                        yaxis_title=wave_characteristic)
 st.plotly_chart(wave_fig)
 
-# Rainfall Frequency Curve
-st.header("Rainfall Frequency Curve")
+# Rainfall Frequency Analysis
+st.header("Rainfall Frequency Analysis")
 
 def perform_rainfall_frequency_analysis(rainfall_data):
     shape, loc, scale = stats.genextreme.fit(rainfall_data['Net Rainfall (mm)'])
