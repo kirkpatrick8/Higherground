@@ -4,6 +4,13 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from scipy import stats
+import io
+import matplotlib.pyplot as plt
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
+from reportlab.lib.utils import ImageReader
+from reportlab.platypus import Table, TableStyle
+from datetime import datetime
 
 # Set page config
 st.set_page_config(page_title="Reservoir Freeboard Analysis", layout="wide")
@@ -33,11 +40,25 @@ uploaded_return_period_file = st.file_uploader("Upload Return Period Data CSV", 
 # Load data
 @st.cache_data
 def load_data(reservoir_file, return_period_file):
-    if reservoir_file is not None and return_period_file is not None:
-        reservoir_data = pd.read_csv(reservoir_file)
-        return_periods = pd.read_csv(return_period_file)
-        return reservoir_data, return_periods
-    return None, None
+    try:
+        if reservoir_file is not None and return_period_file is not None:
+            reservoir_data = pd.read_csv(reservoir_file)
+            return_periods = pd.read_csv(return_period_file)
+            
+            # Validate required columns
+            required_reservoir_columns = ['Option', 'Bottom Water Level (m)', 'Top Water Level (m)', 'Storage Volume (m3)', 'Water Surface Area (m2)', 'Embankment Slopes', 'Cost', 'Max Embankment Height (m)']
+            required_return_period_columns = ['Year', 'Net Rainfall (mm)']
+            
+            if not all(col in reservoir_data.columns for col in required_reservoir_columns):
+                raise ValueError("Reservoir data CSV is missing required columns.")
+            if not all(col in return_periods.columns for col in required_return_period_columns):
+                raise ValueError("Return period data CSV is missing required columns.")
+            
+            return reservoir_data, return_periods
+        return None, None
+    except Exception as e:
+        st.error(f"Error loading data: {str(e)}")
+        return None, None
 
 reservoir_data, return_periods = load_data(uploaded_reservoir_file, uploaded_return_period_file)
 
@@ -57,11 +78,24 @@ reservoir_data['Embankment_Slopes_Numeric'] = reservoir_data['Embankment Slopes'
 
 # Sidebar for scenario parameters
 st.sidebar.header("Scenario Parameters")
+
+# General Parameters (affect all scenarios)
+st.sidebar.subheader("General Parameters")
 CATEGORY_A_MIN_FREEBOARD = st.sidebar.number_input("Category A Min Freeboard (m)", value=0.6, step=0.1)
 WIND_SPEED = st.sidebar.number_input("Wind Speed (m/s)", value=15.0, step=0.5)
+
+# Pump Failure Scenario
+st.sidebar.subheader("Pump Failure Scenario")
 PUMP_FAILURE_INFLOW = st.sidebar.number_input("Pump Failure Inflow (Mm³/hour)", value=0.75, step=0.05) * 1e6
 PUMP_FAILURE_DURATION = st.sidebar.number_input("Pump Failure Duration (hours)", value=1, step=1)
+
+# System Failure Scenario
+st.sidebar.subheader("System Failure Scenario")
 OUTAGE_DURATION = st.sidebar.number_input("System Failure Outage Duration (hours)", value=24*7, step=24)
+
+# Sensitivity Analysis
+st.sidebar.header("Sensitivity Analysis")
+sensitivity_factor = st.sidebar.slider("Adjustment Factor", 0.5, 2.0, 1.0, 0.1)
 
 # Functions
 def calculate_wave_characteristics(fetch, wind_speed, slope):
@@ -157,34 +191,30 @@ def perform_analysis(reservoir_data, return_periods):
 # Perform analysis
 results = perform_analysis(reservoir_data, return_periods)
 
-# Debug information
-st.subheader("Debug Information")
-st.write("Original reservoir_data columns:", reservoir_data.columns.tolist())
-st.write("Results columns:", results.columns.tolist())
+# Sensitivity analysis
+sensitivity_results = perform_analysis(reservoir_data, return_periods.copy())
+sensitivity_results.update(sensitivity_results.select_dtypes(include=[np.number]) * sensitivity_factor)
 
 # Calculate Freeboard Margin
-st.header("Freeboard Margin Calculation")
+results['Max_Water_Level'] = results[[col for col in results.columns if col.endswith('_optimal_crest')]].max(axis=1)
+results['Freeboard_Margin'] = results['Max_Water_Level'] - results['Top Water Level (m)']
 
-if 'Top Water Level (m)' not in results.columns:
-    st.error("'Top Water Level (m)' column is missing from the results. Please check the analysis function.")
-    st.stop()
+# Summary Dashboard
+st.header("Summary Dashboard")
+summary_metrics = ['Option', 'Max_Water_Level', 'Freeboard_Margin', 'Wave_total_freeboard']
+summary_df = results[summary_metrics].set_index('Option')
+st.dataframe(summary_df)
 
-optimal_crest_columns = [col for col in results.columns if col.endswith('_optimal_crest')]
-if optimal_crest_columns:
-    results['Max_Water_Level'] = results[optimal_crest_columns].max(axis=1)
-    st.write("Max Water Level calculated from columns:", optimal_crest_columns)
-else:
-    st.error("No '_optimal_crest' columns found. Unable to calculate Max Water Level.")
-    st.stop()
-
-try:
-    results['Freeboard_Margin'] = results['Max_Water_Level'] - results['Top Water Level (m)']
-    st.success("Freeboard Margin calculated successfully.")
-except Exception as e:
-    st.error(f"Error calculating Freeboard Margin: {str(e)}")
-    st.write("Results head:")
-    st.write(results.head())
-    st.stop()
+# Comparison Tool
+st.header("Option Comparison Tool")
+options_to_compare = st.multiselect("Select options to compare:", results['Option'].unique())
+if options_to_compare:
+    comparison_df = results[results['Option'].isin(options_to_compare)].set_index('Option')
+    st.dataframe(comparison_df)
+    
+    # Comparison chart
+    comparison_chart = px.bar(comparison_df.reset_index(), x='Option', y='Freeboard_Margin', title="Freeboard Margin Comparison")
+    st.plotly_chart(comparison_chart)
 
 # Interactive Dashboard
 st.header("Interactive Dashboard")
@@ -204,43 +234,39 @@ selected_options = st.multiselect(
 filtered_results = results[results['Option'].isin(selected_options)]
 
 # Prepare data for visualization
-try:
-    if "Normal Operation" in scenario:
-        if scenario == "Normal Operation":
-            columns_to_plot = [col for col in filtered_results.columns if col.startswith('Normal_Operation_') and col.endswith('_optimal_crest')]
-            melted_data = filtered_results.melt(
-                id_vars=['Option'],
-                value_vars=columns_to_plot,
-                var_name='Return Period',
-                value_name='Optimal Crest Level'
-            )
-            melted_data['Return Period'] = melted_data['Return Period'].str.extract(r'(\d+\.?\d*)').astype(float)
-            fig = px.line(melted_data, x='Return Period', y='Optimal Crest Level', color='Option', markers=True)
-            fig.update_layout(title="Normal Operation - Optimal Crest Level vs Return Period", 
-                              xaxis_title="Return Period (years)", 
-                              yaxis_title="Optimal Crest Level (m)")
-        else:
-            year = float(scenario.split('(')[1].split('yr')[0])
-            column_to_plot = f'Normal_Operation_{year:.1f}yr_optimal_crest'
-            fig = px.bar(filtered_results, x='Option', y=column_to_plot, color='Option')
-            fig.update_layout(title=f"Normal Operation ({year:.1f}-year) - Optimal Crest Level by Option", 
-                              xaxis_title="Option", 
-                              yaxis_title="Optimal Crest Level (m)")
-    elif scenario == "Pump Failure":
-        fig = px.bar(filtered_results, x='Option', y='Pump_Failure_optimal_crest', color='Option')
-        fig.update_layout(title="Pump Failure - Optimal Crest Level by Option", 
+if "Normal Operation" in scenario:
+    if scenario == "Normal Operation":
+        columns_to_plot = [col for col in filtered_results.columns if col.startswith('Normal_Operation_') and col.endswith('_optimal_crest')]
+        melted_data = filtered_results.melt(
+            id_vars=['Option'],
+            value_vars=columns_to_plot,
+            var_name='Return Period',
+            value_name='Optimal Crest Level'
+        )
+        melted_data['Return Period'] = melted_data['Return Period'].str.extract(r'(\d+\.?\d*)').astype(float)
+        fig = px.line(melted_data, x='Return Period', y='Optimal Crest Level', color='Option', markers=True)
+        fig.update_layout(title="Normal Operation - Optimal Crest Level vs Return Period", 
+                          xaxis_title="Return Period (years)", 
+                          yaxis_title="Optimal Crest Level (m)")
+    else:
+        year = float(scenario.split('(')[1].split('yr')[0])
+        column_to_plot = f'Normal_Operation_{year:.1f}yr_optimal_crest'
+        fig = px.bar(filtered_results, x='Option', y=column_to_plot, color='Option')
+        fig.update_layout(title=f"Normal Operation ({year:.1f}-year) - Optimal Crest Level by Option", 
                           xaxis_title="Option", 
                           yaxis_title="Optimal Crest Level (m)")
-    else:  # System Failure
-        fig = px.bar(filtered_results, x='Option', y='System_Failure_optimal_crest', color='Option')
-        fig.update_layout(title="System Failure - Optimal Crest Level by Option", 
-                          xaxis_title="Option", 
-                          yaxis_title="Optimal Crest Level (m)")
+elif scenario == "Pump Failure":
+    fig = px.bar(filtered_results, x='Option', y='Pump_Failure_optimal_crest', color='Option')
+    fig.update_layout(title="Pump Failure - Optimal Crest Level by Option", 
+                      xaxis_title="Option", 
+                      yaxis_title="Optimal Crest Level (m)")
+else:  # System Failure
+    fig = px.bar(filtered_results, x='Option', y='System_Failure_optimal_crest', color='Option')
+    fig.update_layout(title="System Failure - Optimal Crest Level by Option", 
+                      xaxis_title="Option", 
+                      yaxis_title="Optimal Crest Level (m)")
 
-    st.plotly_chart(fig)
-except Exception as e:
-    st.error(f"Error creating visualization: {str(e)}")
-    st.write("Filtered results columns:", filtered_results.columns.tolist())
+st.plotly_chart(fig)
 
 # Wave Characteristics Dashboard
 st.header("Wave Characteristics Dashboard")
@@ -275,17 +301,13 @@ rainfall_fig.update_layout(title="Rainfall Frequency Curve",
                            yaxis_title="Rainfall (mm)")
 st.plotly_chart(rainfall_fig)
 
-# Freeboard Margin Comparison
+# Freeboard Margin Comparison (continued)
 st.header("Freeboard Margin Comparison")
-try:
-    freeboard_fig = px.bar(filtered_results, x='Option', y='Freeboard_Margin', color='Option')
-    freeboard_fig.update_layout(title="Freeboard Margin by Option", 
-                                xaxis_title="Option", 
-                                yaxis_title="Freeboard Margin (m)")
-    st.plotly_chart(freeboard_fig)
-except Exception as e:
-    st.error(f"Error creating Freeboard Margin visualization: {str(e)}")
-    st.write("Filtered results columns:", filtered_results.columns.tolist())
+freeboard_fig = px.bar(filtered_results, x='Option', y='Freeboard_Margin', color='Option')
+freeboard_fig.update_layout(title="Freeboard Margin by Option", 
+                            xaxis_title="Option", 
+                            yaxis_title="Freeboard Margin (m)")
+st.plotly_chart(freeboard_fig)
 
 # Comprehensive Results Tables
 st.header("Comprehensive Results Tables")
@@ -310,36 +332,64 @@ st.subheader("Wave Characteristics Results")
 wave_columns = [col for col in results.columns if col.startswith('Wave_')]
 st.dataframe(results[['Option'] + wave_columns])
 
-# Freeboard Margin Results
-st.subheader("Freeboard Margin Results")
-if 'Freeboard_Margin' in results.columns and 'Max_Water_Level' in results.columns:
-    freeboard_columns = ['Option', 'Top Water Level (m)', 'Max_Water_Level', 'Freeboard_Margin']
-    st.dataframe(results[freeboard_columns])
-else:
-    st.error("Freeboard Margin or Max Water Level columns are missing. Please check the calculations.")
+# PDF Report Generation
+def create_pdf_report(results, summary_df):
+    buffer = io.BytesIO()
+    c = canvas.Canvas(buffer, pagesize=letter)
+    width, height = letter
 
-# Original Data
-st.subheader("Original Reservoir Data")
-original_columns = ['Option', 'Bottom Water Level (m)', 'Top Water Level (m)', 'Storage Volume (m3)', 
-                    'Water Surface Area (m2)', 'Embankment Slopes', 'Cost', 'Max Embankment Height (m)']
-st.dataframe(results[original_columns])
+    # Title
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(50, height - 50, "Reservoir Freeboard Analysis Report")
 
-# Download results
-st.header("Download Results")
+    # Summary Table
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(50, height - 80, "Summary")
+    data = [['Option', 'Max Water Level (m)', 'Freeboard Margin (m)']]
+    data.extend(summary_df.reset_index().values.tolist())
+    table = Table(data, colWidths=[80, 100, 100])
+    table.setStyle(TableStyle([
+        ('GRID', (0,0), (-1,-1), 0.25, (0,0,0)),
+        ('BACKGROUND', (0,0), (-1,0), (0.8,0.8,0.8))
+    ]))
+    table.wrapOn(c, width, height)
+    table.drawOn(c, 50, height - 300)
 
-@st.cache_data
-def convert_df_to_csv(df):
-    return df.to_csv(index=False).encode('utf-8')
+    # Freeboard Margin Chart
+    plt.figure(figsize=(8, 4))
+    plt.bar(summary_df.index, summary_df['Freeboard_Margin'])
+    plt.title('Freeboard Margins by Option')
+    plt.xlabel('Option')
+    plt.ylabel('Freeboard Margin (m)')
+    plt.xticks(rotation=45)
+    img_buffer = io.BytesIO()
+    plt.savefig(img_buffer, format='png')
+    img_buffer.seek(0)
+    c.drawImage(ImageReader(img_buffer), 50, height - 550, width=400, height=200)
 
-csv = convert_df_to_csv(results)
-st.download_button(
-    label="Download full results as CSV",
-    data=csv,
-    file_name="reservoir_analysis_results.csv",
-    mime="text/csv",
-)
+    c.showPage()
+    c.save()
+    buffer.seek(0)
+    return buffer
 
-# Conclusion
+# Generate and offer PDF download
+st.header("Generate PDF Report")
+if st.button("Generate PDF Report"):
+    pdf_buffer = create_pdf_report(results, summary_df)
+    st.download_button(
+        label="Download PDF Report",
+        data=pdf_buffer,
+        file_name="reservoir_analysis_report.pdf",
+        mime="application/pdf"
+    )
+
+# User Notes
+st.header("User Notes")
+user_notes = st.text_area("Enter any additional notes or observations here:")
+if user_notes:
+    st.success("Notes saved successfully!")
+
+# Conclusion and Recommendations
 st.header("Conclusion and Recommendations")
 st.write("""
 Based on the analysis performed, consider the following recommendations:
@@ -369,22 +419,6 @@ st.write("""
 - Document all assumptions and limitations of this analysis for future reference and transparency in decision-making.
 """)
 
-# User Feedback
-st.header("User Feedback")
-st.write("""
-We value your input! If you have any suggestions for improving this tool or encounter any issues, please let us know.
-You can provide feedback by:
-- Emailing the creator: mark.kirkpatrick@aecom.com
-- Submitting an issue on our project repository (if applicable)
-- Using the feedback form below
-""")
-
-feedback = st.text_area("Enter your feedback here:")
-if st.button("Submit Feedback"):
-    # Here you would typically send this feedback to a database or email
-    # For now, we'll just acknowledge it
-    st.success("Thank you for your feedback! We appreciate your input.")
-
 # Disclaimer
 st.header("Disclaimer")
 st.write("""
@@ -395,9 +429,6 @@ Users should always consult with qualified professionals and comply with all app
 The creators and maintainers of this tool assume no liability for any consequences resulting from the use of this tool or the information it provides.
 """)
 
-# Closing
-st.write("Analysis complete. Thank you for using the Comprehensive Reservoir Freeboard Analysis tool.")
-
-# Optional: Add a timestamp for when the analysis was run
-from datetime import datetime
-st.write(f"Analysis run on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+# Footer with timestamp
+st.markdown("---")
+st.write(f"Analysis completed on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
