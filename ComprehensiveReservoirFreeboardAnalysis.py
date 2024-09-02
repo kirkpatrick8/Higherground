@@ -64,32 +64,34 @@ PUMP_FAILURE_DURATION = st.sidebar.number_input("Pump Failure Duration (hours)",
 OUTAGE_DURATION = st.sidebar.number_input("System Failure Outage Duration (hours)", value=24*7, step=24)
 
 # Functions
-def calculate_wave_characteristics(fetch, wind_speed, slope):
+def calculate_wave_characteristics(row, wind_speed):
+    fetch = np.sqrt(row["Water Surface Area (m2)"])
+    slope = 1 / row["Embankment_Slopes_Numeric"]
     g = 9.81  # acceleration due to gravity (m/s^2)
+    
     Hs = 0.0016 * (wind_speed**2 / g) * np.sqrt(fetch / g)
     HD = Hs * 1.2  # Using the "Surfaced road" factor
     Rf = 2.2 if slope == 1/2 else 1.75 if slope == 1/3 else 2.0
     wave_surcharge = Rf * HD
     wave_surcharge = max(wave_surcharge, CATEGORY_A_MIN_FREEBOARD)
-    safety_margin = 0.2  # meters
-    total_freeboard = wave_surcharge + safety_margin
-    return {
-        'Hs': Hs,
-        'HD': HD,
-        'Rf': Rf,
-        'wave_surcharge': wave_surcharge,
-        'total_freeboard': total_freeboard
-    }
+    total_freeboard = wave_surcharge + 0.2  # 0.2m safety margin
+    
+    return pd.Series({
+        'Fetch (m)': fetch,
+        'Significant Wave Height (Hs) (m)': Hs,
+        'Design Wave Height (HD) (m)': HD,
+        'Run-up Factor (Rf)': Rf,
+        'Wave Surcharge (m)': wave_surcharge,
+        'Total Freeboard (m)': total_freeboard
+    })
 
 def calculate_normal_operation(row, wind_speed, rainfall, year):
     top_level = row["Top Water Level (m)"]
     surface_area = row["Water Surface Area (m2)"]
-    slope = 1 / row["Embankment_Slopes_Numeric"]
-    fetch = np.sqrt(surface_area)
-    wave_char = calculate_wave_characteristics(fetch, wind_speed, slope)
     volume_increase = rainfall * surface_area / 1000  # Convert mm to m
     depth_increase = volume_increase / surface_area
-    optimal_crest = top_level + wave_char['total_freeboard']
+    wave_char = calculate_wave_characteristics(row, wind_speed)
+    optimal_crest = top_level + wave_char['Total Freeboard (m)']
     return pd.Series({
         'year': year,
         'optimal_crest': optimal_crest,
@@ -206,18 +208,27 @@ wave_scenario = st.selectbox(
     [f"{year:.1f}yr" for year in return_periods['Year']]
 )
 
-wave_characteristic = st.selectbox(
-    "Choose wave characteristic to visualize:",
-    ["Significant Wave Height (Hs)", "Design Wave Height (HD)", "Run-up Factor (Rf)", "Wave Surcharge", "Total Freeboard"]
+# Calculate wave characteristics for all options
+wave_results = filtered_results.apply(lambda row: calculate_wave_characteristics(row, WIND_SPEED), axis=1)
+
+# Combine with Option column
+wave_results = pd.concat([filtered_results['Option'], wave_results], axis=1)
+
+# Display the results table
+st.dataframe(wave_results)
+
+# Add option to download the results
+@st.cache_data
+def convert_df_to_csv(df):
+    return df.to_csv(index=False).encode('utf-8')
+
+csv = convert_df_to_csv(wave_results)
+st.download_button(
+    label="Download wave characteristics results as CSV",
+    data=csv,
+    file_name="wave_characteristics_results.csv",
+    mime="text/csv",
 )
-
-wave_column = f"Normal_Operation_{wave_scenario}_{wave_characteristic.split('(')[0].strip().lower().replace(' ', '_')}"
-
-wave_fig = px.bar(filtered_results, x='Option', y=wave_column, color='Option')
-wave_fig.update_layout(title=f"{wave_characteristic} for {wave_scenario} Return Period", 
-                       xaxis_title="Option", 
-                       yaxis_title=wave_characteristic)
-st.plotly_chart(wave_fig)
 
 # Rainfall Frequency Analysis
 st.header("Rainfall Frequency Analysis")
@@ -254,10 +265,6 @@ st.dataframe(filtered_results[metrics_cols].set_index('Option'))
 
 # Download results
 st.header("Download Results")
-
-@st.cache_data
-def convert_df_to_csv(df):
-    return df.to_csv(index=False).encode('utf-8')
 
 csv = convert_df_to_csv(results)
 st.download_button(
