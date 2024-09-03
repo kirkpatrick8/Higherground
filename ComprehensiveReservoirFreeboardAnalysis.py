@@ -289,25 +289,54 @@ st.header("Rainfall Frequency Analysis")
 
 def perform_rainfall_frequency_analysis(rainfall_data):
     shape, loc, scale = stats.genextreme.fit(rainfall_data['Net Rainfall (mm)'])
-    return_periods = np.logspace(0, 5, num=100)
+    return_periods = np.logspace(0, np.log10(200000), num=100)  # Updated to go up to 200,000 years
     rainfall_depths = stats.genextreme.isf(1/return_periods, shape, loc, scale)
     return pd.DataFrame({'Return Period': return_periods, 'Rainfall': rainfall_depths})
 
 rainfall_freq_data = perform_rainfall_frequency_analysis(return_periods)
 
 rainfall_fig = px.line(rainfall_freq_data, x='Return Period', y='Rainfall', log_x=True)
-rainfall_fig.update_layout(title="Rainfall Frequency Curve", 
+rainfall_fig.update_layout(title="Rainfall Frequency Curve (up to 200,000 years)", 
                            xaxis_title="Return Period (years)", 
                            yaxis_title="Rainfall (mm)")
 st.plotly_chart(rainfall_fig)
 
-# Freeboard Margin Comparison (continued)
+# Freeboard Margin Comparison
 st.header("Freeboard Margin Comparison")
 freeboard_fig = px.bar(filtered_results, x='Option', y='Freeboard_Margin', color='Option')
 freeboard_fig.update_layout(title="Freeboard Margin by Option", 
                             xaxis_title="Option", 
                             yaxis_title="Freeboard Margin (m)")
 st.plotly_chart(freeboard_fig)
+
+# New Dashboard: Difference between Top Water Level and Optimal Crest Level
+st.header("Top Water Level vs Optimal Crest Level Comparison")
+
+# Calculate the difference for each scenario
+results['Normal_Op_Diff'] = results[[col for col in results.columns if col.startswith('Normal_Operation_') and col.endswith('_optimal_crest')]].max(axis=1) - results['Top Water Level (m)']
+results['Pump_Failure_Diff'] = results['Pump_Failure_optimal_crest'] - results['Top Water Level (m)']
+results['System_Failure_Diff'] = results['System_Failure_optimal_crest'] - results['Top Water Level (m)']
+
+# Create a melted dataframe for plotting
+diff_data = results[['Option', 'Normal_Op_Diff', 'Pump_Failure_Diff', 'System_Failure_Diff']].melt(
+    id_vars=['Option'],
+    var_name='Scenario',
+    value_name='Difference'
+)
+
+# Create the comparison chart
+diff_fig = px.bar(diff_data, x='Option', y='Difference', color='Scenario', barmode='group')
+diff_fig.update_layout(title="Difference between Top Water Level and Optimal Crest Level by Scenario",
+                       xaxis_title="Option",
+                       yaxis_title="Difference (m)")
+st.plotly_chart(diff_fig)
+
+# Add a table with the numerical values
+st.subheader("Numerical Values of Differences")
+diff_table = results[['Option', 'Normal_Op_Diff', 'Pump_Failure_Diff', 'System_Failure_Diff']]
+diff_table = diff_table.set_index('Option')
+diff_table.columns = ['Normal Operation', 'Pump Failure', 'System Failure']
+st.dataframe(diff_table)
 
 # Comprehensive Results Tables
 st.header("Comprehensive Results Tables")
@@ -331,6 +360,21 @@ st.dataframe(results[['Option'] + system_failure_columns])
 st.subheader("Wave Characteristics Results")
 wave_columns = [col for col in results.columns if col.startswith('Wave_')]
 st.dataframe(results[['Option'] + wave_columns])
+
+# New section: Download Results as CSV
+st.header("Download Results")
+
+@st.cache_data
+def convert_df_to_csv(df):
+    return df.to_csv(index=False).encode('utf-8')
+
+csv = convert_df_to_csv(results)
+st.download_button(
+    label="Download Full Results as CSV",
+    data=csv,
+    file_name="reservoir_analysis_results.csv",
+    mime="text/csv",
+)
 
 # PDF Report Generation
 def create_pdf_report(results, summary_df):
@@ -366,6 +410,20 @@ def create_pdf_report(results, summary_df):
     plt.savefig(img_buffer, format='png')
     img_buffer.seek(0)
     c.drawImage(ImageReader(img_buffer), 50, height - 550, width=400, height=200)
+
+    # Add new comparison chart
+    plt.figure(figsize=(8, 4))
+    diff_data_plot = results[['Option', 'Normal_Op_Diff', 'Pump_Failure_Diff', 'System_Failure_Diff']].set_index('Option')
+    diff_data_plot.plot(kind='bar', ax=plt.gca())
+    plt.title('Difference between Top Water Level and Optimal Crest Level')
+    plt.xlabel('Option')
+    plt.ylabel('Difference (m)')
+    plt.legend(title='Scenario', bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.tight_layout()
+    img_buffer = io.BytesIO()
+    plt.savefig(img_buffer, format='png')
+    img_buffer.seek(0)
+    c.drawImage(ImageReader(img_buffer), 50, height - 800, width=400, height=200)
 
     c.showPage()
     c.save()
